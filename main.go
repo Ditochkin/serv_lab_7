@@ -6,13 +6,14 @@ import (
 )
 
 func main() {
+	API, err := API.InitApi()
 
-	API, err := API.NewAPI()
 	if err != nil {
 		fmt.Println(err)
 	}
 
 	err = API.Start()
+
 	if err != nil {
 		fmt.Println(err)
 	}

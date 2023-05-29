@@ -18,13 +18,15 @@ type API struct {
 	store  *db.Store
 }
 
-func NewAPI() (*API, error) {
+func InitApi() (*API, error) {
 	res := new(API)
 	var err error
 	res.config, err = config.GetConfig()
+
 	if err != nil {
 		return nil, err
 	}
+
 	res.router = mux.NewRouter()
 	return res, nil
 }
@@ -38,9 +40,11 @@ func (a *API) Start() error {
 }
 
 func (a *API) Stop() {
-	fmt.Println("Stopping API...")
 	a.store.Close()
-	fmt.Println("API stopped...")
+}
+
+func (a *API) configureDB() {
+	a.store = db.New(a.config)
 }
 
 func (a *API) configureRouter() {
@@ -54,210 +58,94 @@ func (a *API) configureRouter() {
 	a.router.HandleFunc("/delete_game_publisher", a.handleDeleteGamePublisher())
 
 	a.router.HandleFunc("/delete_platform_by_year", a.handleDeletePlatformByYear())
+
+	a.router.HandleFunc("/create_user", a.handleCreateUser())
+	a.router.HandleFunc("/sign_in", a.handleSignIn())
+	a.router.HandleFunc("/sign_out", a.handleSignOut())
 }
 
-func (a *API) configureDB() {
-	a.store = db.New(a.config)
-}
-
-func (a *API) handleAddPublisher() http.HandlerFunc {
+func (a *API) handleSignOut() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
+		c := &http.Cookie{
+			Name:     "session_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
 		}
-		println(body)
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var publisher types.Publisher
-		err = json.Unmarshal(body, &publisher)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		if publisher.PublisherName == "" {
-			http.Error(writer, "can't add publisher with empty publisherName", http.StatusInternalServerError)
-			return
-		}
-		_, err = a.store.Exec(db.AddPublisherQuery, publisher.PublisherName)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		http.SetCookie(writer, c)
+
 		writer.WriteHeader(http.StatusOK)
 	}
 }
 
-func (a *API) handleDeletePublisher() http.HandlerFunc {
+func (a *API) handleSignIn() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err == nil {
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
+
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			http.Error(writer, "can't read body", http.StatusBadRequest)
 			return
 		}
-		println(body)
 		err = request.Body.Close()
 		if err != nil {
 			http.Error(writer, "can't close body", http.StatusInternalServerError)
 			return
 		}
-		var publisher types.Publisher
-		err = json.Unmarshal(body, &publisher)
+		var usr types.User
+		err = json.Unmarshal(body, &usr)
 		if err != nil {
 			http.Error(writer, "can't close body", http.StatusInternalServerError)
 			return
 		}
-		if publisher.Id < 0 {
-			http.Error(writer, "can't delete publisher with not empty publisherName", http.StatusInternalServerError)
-			return
-		}
-		_, err = a.store.Exec(db.DeletePublisherQuery, publisher.PublisherName, publisher.PublisherName)
+		token, err := a.generateTokensByCred(usr.Username, usr.Password)
 		if err != nil {
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		setTokenCookies(writer, token)
 		writer.WriteHeader(http.StatusOK)
 	}
 }
 
-func (a *API) handleChangePublisher() http.HandlerFunc {
+func (a *API) handleCreateUser() http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
+		_, role, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+		if role != "admin" {
+			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
+			return
+		}
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
 			http.Error(writer, "can't read body", http.StatusBadRequest)
 			return
 		}
-		println(body)
 		err = request.Body.Close()
 		if err != nil {
 			http.Error(writer, "can't close body", http.StatusInternalServerError)
 			return
 		}
-		var publisher types.ChangePublisher
-		err = json.Unmarshal(body, &publisher)
+		var usr types.User
+		err = json.Unmarshal(body, &usr)
 		if err != nil {
 			http.Error(writer, "can't close body", http.StatusInternalServerError)
 			return
 		}
-		if publisher.PublisherName == "" || publisher.NewPublisherName == "" {
-			http.Error(writer, "can't change publisher with empty publisherName", http.StatusInternalServerError)
-			return
-		}
-		_, err = a.store.Exec(db.ChangePublisherQuery, publisher.NewPublisherName, publisher.PublisherName)
+		_, err = a.store.Exec(db.CreateUserQuery, usr.Name, usr.Username, generatePasswordHash(usr.Password), usr.Role)
 		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleAddGamePublisher() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
-		}
-		println(body)
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var publisher types.GamePublisher
-		err = json.Unmarshal(body, &publisher)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		if publisher.PublisherName == "" {
-			http.Error(writer, "can't add publisher with empty publisherName", http.StatusInternalServerError)
-			return
-		}
-
-		if publisher.GameName == "" {
-			http.Error(writer, "can't add game with empty gameName", http.StatusInternalServerError)
-			return
-		}
-
-		_, err = a.store.Exec(db.AddGamePublisherQuery, publisher.GameName, publisher.PublisherName)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleDeleteGamePublisher() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
-		}
-		println(body)
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var publisher types.GamePublisher
-		err = json.Unmarshal(body, &publisher)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		if publisher.PublisherName == "" {
-			http.Error(writer, "can't delete publisher with empty publisherName", http.StatusInternalServerError)
-			return
-		}
-
-		if publisher.GameName == "" {
-			http.Error(writer, "can't delete game with empty gameName", http.StatusInternalServerError)
-			return
-		}
-
-		_, err = a.store.Exec(db.DeleteGamePublisherQuery, publisher.GameName, publisher.PublisherName, publisher.GameName, publisher.PublisherName, publisher.GameName, publisher.PublisherName)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleDeletePlatformByYear() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
-		}
-		println(body)
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var publisher types.PlatformYear
-		err = json.Unmarshal(body, &publisher)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		if publisher.Year <= 0 {
-			http.Error(writer, "can't delete publisher with not positive year", http.StatusInternalServerError)
-			return
-		}
-
-		_, err = a.store.Exec(db.DeleteGamePlatformByYearQuery, publisher.Year, publisher.Year, publisher.Year)
-		if err != nil {
+			if err.Error() == "UNIQUE constraint failed: users.Username" {
+				http.Error(writer, "Username is already in use. Try to use another one.", http.StatusBadGateway)
+				return
+			}
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -287,4 +175,267 @@ func (a *API) Test() error {
 		fmt.Println(id)
 	}
 	return nil
+}
+
+func (a *API) handleAddPublisher() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.Publisher
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.PublisherName == "" {
+			http.Error(writer, "publisherName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.AddPublisherQuery, publisher.PublisherName)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleDeletePublisher() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.Publisher
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+		if publisher.Id < 0 {
+			http.Error(writer, "publisherName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.DeletePublisherQuery, publisher.PublisherName, publisher.PublisherName)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleChangePublisher() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.ChangePublisher
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.PublisherName == "" || publisher.NewPublisherName == "" {
+			http.Error(writer, "publisherName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.ChangePublisherQuery, publisher.NewPublisherName, publisher.PublisherName)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleAddGamePublisher() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.GamePublisher
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.PublisherName == "" {
+			http.Error(writer, "publisherName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.GameName == "" {
+			http.Error(writer, "gameName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.AddGamePublisherQuery, publisher.GameName, publisher.PublisherName)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleDeleteGamePublisher() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.GamePublisher
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.PublisherName == "" {
+			http.Error(writer, "publisherName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.GameName == "" {
+			http.Error(writer, "gameName is empty", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.DeleteGamePublisherQuery, publisher.GameName, publisher.PublisherName, publisher.GameName, publisher.PublisherName, publisher.GameName, publisher.PublisherName)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleDeletePlatformByYear() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var publisher types.PlatformYear
+		err = json.Unmarshal(body, &publisher)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		if publisher.Year <= 0 {
+			http.Error(writer, "year is not positive", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.DeleteGamePlatformByYearQuery, publisher.Year, publisher.Year, publisher.Year)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
 }
