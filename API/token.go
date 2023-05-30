@@ -100,8 +100,8 @@ func setTokenCookies(writer http.ResponseWriter, token string) {
 
 func (a *API) GetIDAndRoleFromToken(writer http.ResponseWriter, request *http.Request) (int64, string, error) {
 	ckc, err := request.Cookie("session_token")
+
 	if err != nil && !errors.Is(err, http.ErrNoCookie) {
-		fmt.Println("Im here! 1")
 		return 0, "", err
 	}
 	if err == nil {
@@ -111,7 +111,6 @@ func (a *API) GetIDAndRoleFromToken(writer http.ResponseWriter, request *http.Re
 			return userID, role, nil
 		}
 	}
-	fmt.Println("Im here! 2")
 
 	return 0, "", errors.New("")
 }

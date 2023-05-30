@@ -34,7 +34,6 @@ func InitApi() (*API, error) {
 func (a *API) Start() error {
 	a.configureRouter()
 	a.configureDB()
-	fmt.Println(a.store.Open())
 
 	return http.ListenAndServe(a.config.Port, a.router)
 }
@@ -62,95 +61,6 @@ func (a *API) configureRouter() {
 	a.router.HandleFunc("/create_user", a.handleCreateUser())
 	a.router.HandleFunc("/sign_in", a.handleSignIn())
 	a.router.HandleFunc("/sign_out", a.handleSignOut())
-}
-
-func (a *API) handleSignOut() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		c := &http.Cookie{
-			Name:     "session_token",
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-		}
-		http.SetCookie(writer, c)
-
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleSignIn() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		_, _, err := a.GetIDAndRoleFromToken(writer, request)
-		if err == nil {
-			writer.WriteHeader(http.StatusOK)
-			return
-		}
-
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
-		}
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var usr types.User
-		err = json.Unmarshal(body, &usr)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		token, err := a.generateTokensByCred(usr.Username, usr.Password)
-		if err != nil {
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		setTokenCookies(writer, token)
-		writer.WriteHeader(http.StatusOK)
-	}
-}
-
-func (a *API) handleCreateUser() http.HandlerFunc {
-	return func(writer http.ResponseWriter, request *http.Request) {
-		_, role, err := a.GetIDAndRoleFromToken(writer, request)
-		if err != nil {
-			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
-			return
-		}
-		if role != "admin" {
-			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
-			return
-		}
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			http.Error(writer, "can't read body", http.StatusBadRequest)
-			return
-		}
-		err = request.Body.Close()
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		var usr types.User
-		err = json.Unmarshal(body, &usr)
-		if err != nil {
-			http.Error(writer, "can't close body", http.StatusInternalServerError)
-			return
-		}
-		_, err = a.store.Exec(db.CreateUserQuery, usr.Name, usr.Username, generatePasswordHash(usr.Password), usr.Role)
-		if err != nil {
-			if err.Error() == "UNIQUE constraint failed: users.Username" {
-				http.Error(writer, "Username is already in use. Try to use another one.", http.StatusBadGateway)
-				return
-			}
-			http.Error(writer, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writer.WriteHeader(http.StatusOK)
-	}
 }
 
 func (a *API) handleTest() http.HandlerFunc {
@@ -432,6 +342,104 @@ func (a *API) handleDeletePlatformByYear() http.HandlerFunc {
 
 		_, err = a.store.Exec(db.DeleteGamePlatformByYearQuery, publisher.Year, publisher.Year, publisher.Year)
 		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleSignIn() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _, err := a.GetIDAndRoleFromToken(writer, request)
+		if err == nil {
+			writer.WriteHeader(http.StatusOK)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		var usr types.User
+		err = json.Unmarshal(body, &usr)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		token, err := a.generateTokensByCred(usr.Username, usr.Password)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		setTokenCookies(writer, token)
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleSignOut() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		c := &http.Cookie{
+			Name:     "session_token",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+		}
+		http.SetCookie(writer, c)
+
+		writer.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) handleCreateUser() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, role, err := a.GetIDAndRoleFromToken(writer, request)
+		if err != nil {
+			http.Error(writer, "You are not logged in. Sign In please", http.StatusBadRequest)
+			return
+		}
+
+		if role != "admin" {
+			http.Error(writer, "You are not admin and you have no right for this act.", http.StatusBadRequest)
+			return
+		}
+
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			http.Error(writer, "error in reading request", http.StatusBadRequest)
+			return
+		}
+
+		err = request.Body.Close()
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+		var usr types.User
+		err = json.Unmarshal(body, &usr)
+		if err != nil {
+			http.Error(writer, "wrong json body part", http.StatusInternalServerError)
+			return
+		}
+
+		_, err = a.store.Exec(db.CreateUserQuery, usr.Name, usr.Username, generatePasswordHash(usr.Password), usr.Role)
+		if err != nil {
+			if err.Error() == "UNIQUE constraint failed: users.Username" {
+				http.Error(writer, "Username is already in use. Try to use another one.", http.StatusBadGateway)
+				return
+			}
 			http.Error(writer, err.Error(), http.StatusInternalServerError)
 			return
 		}
